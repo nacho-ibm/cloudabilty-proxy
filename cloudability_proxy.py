@@ -8,14 +8,9 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import os
+from dotenv import load_dotenv
 
-# Load environment variables (solo para desarrollo local)
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    # En producción (Code Engine) no se necesita dotenv
-    pass
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)  # Permitir CORS para Orchestrate
@@ -26,11 +21,60 @@ CLOUDABILITY_API_URL = "https://api.cloudability.com"
 CUSTOMER_ID = "prismamediosdepago.com"
 ENVIRONMENT_NAME = "poc"
 
+# Cache simple para guardar sesiones token -> environmentId
+# En producción, usar Redis o similar
+token_sessions = {}
+
 
 @app.route('/health', methods=['GET'])
 def health():
     """Endpoint de health check"""
     return jsonify({"status": "ok", "service": "cloudability-proxy"}), 200
+
+
+@app.route('/api/debug/business-mapping-payload', methods=['POST'])
+def debug_bm_payload():
+    """Endpoint para debuggear el payload que se enviaría a Cloudability"""
+    try:
+        data = request.get_json()
+        
+        # Extraer token
+        auth_header = data.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header.replace('Bearer ', '')
+        else:
+            token = auth_header or data.get('token', '')
+        
+        # Buscar environmentId
+        environment_id = data.get('X-Environment-Id') or data.get('environmentId')
+        if not environment_id:
+            environment_id = token_sessions.get(token)
+        
+        # Construir mapping_data
+        mapping_data = {k: v for k, v in data.items() 
+                       if k not in ['Authorization', 'X-Environment-Id', 'token', 'environmentId']}
+        
+        # Payload que se enviaría a Cloudability
+        cloudability_payload = {
+            "result": mapping_data
+        }
+        
+        return jsonify({
+            "success": True,
+            "debug_info": {
+                "token_found": bool(token),
+                "token_length": len(token) if token else 0,
+                "environment_id": environment_id,
+                "mapping_data": mapping_data,
+                "cloudability_payload": cloudability_payload
+            }
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -56,7 +100,7 @@ def authenticate():
         
         if not data or 'publicKey' not in data or 'privateKey' not in data:
             return jsonify({
-                "success": false,
+                "success": False,
                 "error": "publicKey y privateKey son requeridos"
             }), 400
         
@@ -112,6 +156,9 @@ def authenticate():
                 "success": False,
                 "error": "Environment ID no encontrado en la respuesta"
             }), 500
+        
+        # Guardar la sesión token -> environmentId
+        token_sessions[token] = environment_id
         
         # Devolver ambos en el body
         return jsonify({
@@ -244,36 +291,60 @@ def create_business_mapping():
     """
     Crea un Business Mapping en Cloudability.
     
-    Headers requeridos:
-    - Authorization: Bearer {token}
-    - X-Environment-Id: {environmentId}
+    Body esperado (desde Orchestrate):
+    {
+        "Authorization": "Bearer token",
+        "name": "Business Unit",
+        "kind": "BUSINESS_DIMENSION",
+        "defaultValue": "Unallocated",
+        "statements": [...]
+    }
     
-    Body: Estructura del Business Mapping
+    O también acepta (para compatibilidad):
+    {
+        "Authorization": "Bearer token",
+        "X-Environment-Id": "env-id",  // Opcional
+        ...
+    }
     """
     try:
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
+        data = request.get_json()
+        
+        if not data:
             return jsonify({
                 "success": False,
-                "error": "Token de autenticación requerido"
-            }), 401
+                "error": "Body requerido"
+            }), 400
         
-        token = auth_header.replace('Bearer ', '')
-        environment_id = request.headers.get('X-Environment-Id')
+        # Extraer token del body (soportar varios formatos)
+        auth_header = data.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header.replace('Bearer ', '')
+        else:
+            token = auth_header or data.get('token', '')
         
+        if not token:
+            return jsonify({
+                "success": False,
+                "error": "El campo 'Authorization' o 'token' es requerido"
+            }), 400
+        
+        # Buscar environmentId: primero en el body, luego en la sesión
+        environment_id = data.get('X-Environment-Id') or data.get('environmentId')
+        
+        if not environment_id:
+            # Buscar en el cache de sesiones
+            environment_id = token_sessions.get(token)
+            
         if not environment_id:
             return jsonify({
                 "success": False,
-                "error": "Environment ID requerido"
+                "error": "Environment ID no encontrado. Asegúrate de hacer login primero o incluir 'X-Environment-Id' en el body"
             }), 400
         
-        mapping_data = request.get_json()
-        
-        if not mapping_data:
-            return jsonify({
-                "success": False,
-                "error": "Body del Business Mapping requerido"
-            }), 400
+        # Construir el objeto business mapping (sin los campos de autenticación)
+        mapping_data = {k: v for k, v in data.items() 
+                       if k not in ['Authorization', 'X-Environment-Id', 'token', 'environmentId']}
         
         # Validar que tenga el campo 'name' requerido
         if 'name' not in mapping_data or not mapping_data.get('name'):
@@ -282,10 +353,8 @@ def create_business_mapping():
                 "error": "El campo 'name' es requerido y no puede estar vacío"
             }), 400
         
-        # Envolver en objeto 'result' como espera Cloudability
-        cloudability_payload = {
-            "result": mapping_data
-        }
+        # Cloudability espera el objeto DIRECTO, sin envolver en "result"
+        cloudability_payload = mapping_data
         
         response = requests.post(
             f"{CLOUDABILITY_API_URL}/v3/business-mappings",
