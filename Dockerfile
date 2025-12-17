@@ -16,5 +16,8 @@ COPY cloudability_proxy.py .
 # Expose port (Code Engine will use PORT env variable)
 EXPOSE 8080
 
-# Run the application
-CMD ["python", "cloudability_proxy.py"]
+# Set environment variable for production
+ENV PORT=8080
+
+# Run the application with Gunicorn (production-ready)
+CMD gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 cloudability_proxy:app
