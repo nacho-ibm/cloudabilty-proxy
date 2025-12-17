@@ -13,7 +13,7 @@ $PROJECT_NAME = "cloudability-proxy"
 $APP_NAME = "cloudability-api"
 $REGION = "us-south"  # Cambiar si usas otra región
 $REGISTRY = "icr.io"  # IBM Container Registry
-$NAMESPACE = "your-namespace"  # Cambiar por tu namespace
+$NAMESPACE = "cr-itz-k006ub1s"  # Cambiar por tu namespace
 
 # Verificar que estás logueado en IBM Cloud
 Write-Host "1. Verificando autenticación en IBM Cloud..." -ForegroundColor Yellow
@@ -108,3 +108,4 @@ Write-Host "1. Actualiza cloudability-proxy-api.yaml con esta URL"
 Write-Host "2. Reimporta el OpenAPI en Orchestrate"
 Write-Host "3. Prueba los endpoints"
 Write-Host ""
+
