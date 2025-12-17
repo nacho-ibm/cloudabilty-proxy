@@ -8,9 +8,14 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+# Load environment variables (solo para desarrollo local)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # En producción (Code Engine) no se necesita dotenv
+    pass
 
 app = Flask(__name__)
 CORS(app)  # Permitir CORS para Orchestrate
